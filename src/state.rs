@@ -1,30 +1,30 @@
-/// App states.
+/// Represents the various screens and logic states of the application.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppState {
-    // Main menu.
+    /// Initial screen where the user selects an action.
     MainMenu,
 
-    // Play menu.
+    /// Sub-menu for choosing between hosting or joining.
     PlayMenu,
 
-    // Host input.
+    /// Interface for entering hosting parameters like port.
     HostInput,
 
-    // Join input.
+    /// Interface for entering the host's IP address.
     JoinInput,
 
-    // Connecting.
+    /// Transition state while waiting for a network handshake.
     Connecting,
 
-    // Ship placement.
+    /// Phase where the player positions their ships on the grid.
     Placing,
 
-    // Battle.
+    /// The active combat phase of the game.
     Game,
 
-    // Game over.
+    /// Terminal state showing the winner and final scores.
     GameOver,
 
-    // Disconnected.
+    /// Error state triggered when the network peer leaves.
     OpponentDisconnected,
 }

@@ -10,16 +10,19 @@ use ratatui::{
 };
 use std::io::{self, Stdout};
 
-/// TUI manager.
+/// Manages the terminal user interface lifecycle.
 pub struct Tui {
-    // Terminal interface.
+    /// Interface for drawing frames to the terminal.
     pub terminal: Terminal<CrosstermBackend<Stdout>>,
 }
 
 impl Tui {
-    /// Initialize TUI.
+    /// Initializes the terminal by entering raw mode and the alternate screen.
     pub fn new() -> io::Result<Self> {
+        // enable raw mode to capture keyboard input directly.
         enable_raw_mode()?;
+
+        // enter the alternate screen and enable mouse support protocols.
         execute!(
             io::stdout(),
             EnterAlternateScreen,
@@ -33,9 +36,12 @@ impl Tui {
         Ok(Self { terminal })
     }
 
-    /// Restore terminal.
+    /// Restores the terminal to its original state before exiting.
     pub fn restore() -> io::Result<()> {
+        // disable raw mode to return control to the shell.
         disable_raw_mode()?;
+
+        // exit the alternate screen and disable mouse support.
         execute!(
             io::stdout(),
             LeaveAlternateScreen,

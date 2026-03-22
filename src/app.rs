@@ -9,59 +9,59 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::Duration;
 
-/// Application state and logic.
+/// Holds the primary application state and handles the main event loop.
 pub struct App {
-    // Current screen state.
+    /// current active screen or logic state.
     pub state: AppState,
 
-    // Exit flag.
+    /// flag to signal the application should terminate.
     pub exit: bool,
 
-    // Menu options.
+    /// labels for the currently active menu.
     pub menu_options: Vec<&'static str>,
 
-    // Menu selection state.
+    /// stateful tracking for the list widget selection.
     pub menu_state: ListState,
 
-    // Input buffer.
+    /// buffer for text input in chat or connection screens.
     pub input_buffer: String,
 
-    // Hosting port.
+    /// the port used when hosting a game.
     pub host_port: String,
 
-    // Join address.
+    /// the remote address used when joining a game.
     pub join_addr: String,
 
-    // Game logic state.
+    /// local simulation of the battleship boards and turns.
     pub game_state: Option<GameState>,
 
-    // Network sender.
+    /// channel to send messages to the background network thread.
     pub peer_sender: Option<Sender<Message>>,
 
-    // Network receiver.
+    /// channel to receive messages from the background network thread.
     pub msg_receiver: Option<Receiver<Message>>,
 
-    // Cursor position.
+    /// current (x, y) coordinate of the grid cursor.
     pub cursor_pos: (usize, usize),
 
-    // Chat status.
+    /// whether the user is currently typing in the radio buffer.
     pub chat_active: bool,
 
-    // Chat history.
+    /// history of sent and received chat messages.
     pub chat_history: Vec<String>,
 
-    // Current ship index.
+    /// index of the ship currently being placed.
     pub placing_ship_idx: usize,
 
-    // Ship orientation.
+    /// toggle for ship placement orientation.
     pub placing_horizontal: bool,
 
-    // Winner status.
+    /// tracks if the local player won or lost.
     pub game_over_winner: Option<bool>,
 }
 
 impl Default for App {
-    /// Default app state.
+    /// Initializes the app with default main menu settings.
     fn default() -> Self {
         let mut menu_state = ListState::default();
         menu_state.select(Some(0));
@@ -87,24 +87,24 @@ impl Default for App {
 }
 
 impl App {
-    /// Main game loop.
+    /// Enters the main application loop, processing input and drawing frames.
     pub fn run(&mut self, terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<()> {
         while !self.exit {
-            // Update state.
+            // check for incoming network messages before rendering.
             self.update();
 
-            // Render UI.
+            // draw the UI based on the current app state.
             terminal.draw(|f| crate::ui::render(self, f))?;
 
-            // Poll for input.
+            // poll for keyboard events at a steady interval.
             if event::poll(Duration::from_millis(50))? {
-                // Drain events.
+                // drain all pending events to keep input responsive.
                 while event::poll(Duration::from_millis(0))? {
                     let ev = event::read()?;
                     match ev {
                         Event::Key(key) => {
                             if key.kind == KeyEventKind::Press {
-                                // Handle input by state.
+                                // route input handling based on the current screen.
                                 match self.state {
                                     AppState::MainMenu | AppState::PlayMenu => self.handle_menu_input(key.code),
                                     AppState::HostInput | AppState::JoinInput => self.handle_text_input(key.code),
@@ -119,7 +119,7 @@ impl App {
                                 }
                             }
                         }
-                        Event::Mouse(_) | Event::FocusGained | Event::FocusLost | Event::Resize(_, _) | Event::Paste(_) => {}
+                        _ => {}
                     }
                 }
             }
@@ -127,10 +127,11 @@ impl App {
         Ok(())
     }
 
-    /// Update from network.
+    /// Pulls all pending messages from the network receiver channel.
     fn update(&mut self) {
         let mut messages = Vec::new();
         if let Some(ref rx) = self.msg_receiver {
+            // collect all messages available in the channel without blocking.
             while let Ok(msg) = rx.try_recv() {
                 messages.push(msg);
             }
@@ -140,10 +141,11 @@ impl App {
         }
     }
 
-    /// Handle network messages.
+    /// Resolves logic for specific message types received from the peer.
     fn handle_network_message(&mut self, msg: Message) {
         match msg {
             Message::Ready => {
+                // transition to ship placement once both players are connected.
                 if self.state == AppState::Connecting {
                     self.state = AppState::Placing;
                 }
@@ -154,6 +156,7 @@ impl App {
                         let is_hit = result_cell == crate::game::Cell::Hit;
                         let is_all_sunk = state.my_board.is_all_sunk();
 
+                        // notify the opponent of the result of their shot.
                         self.send_network_message(Message::Result {
                             x,
                             y,
@@ -161,7 +164,7 @@ impl App {
                             sunk: is_all_sunk,
                         });
 
-                        // Check for loss.
+                        // end the game if all local ships are destroyed.
                         if is_all_sunk {
                             self.state = AppState::GameOver;
                             self.game_over_winner = Some(false);
@@ -172,7 +175,7 @@ impl App {
                 }
             }
             Message::Result { x, y, hit, sunk } => {
-                // Handle attack result.
+                // record the result of the local player's shot on the tracking board.
                 if let Some(ref mut state) = self.game_state {
                     state.opponent_board.cells[y][x] = if hit {
                         crate::game::Cell::Hit
@@ -180,7 +183,7 @@ impl App {
                         crate::game::Cell::Miss
                     };
 
-                    // Check for win.
+                    // end the game if the opponent reports all ships sunk.
                     if sunk {
                         self.state = AppState::GameOver;
                         self.game_over_winner = Some(true);
@@ -190,11 +193,11 @@ impl App {
                 }
             }
             Message::ChatMessage(text) => {
-                // Add to chat history.
+                // append incoming chat messages to the local history.
                 self.chat_history.push(format!("Opponent: {}", text));
             }
             Message::Disconnected => {
-                // Handle disconnect.
+                // handle unexpected peer disconnection unless already at the menu.
                 if self.state != AppState::MainMenu {
                     self.state = AppState::OpponentDisconnected;
                     self.menu_options = vec!["OK"];
@@ -204,14 +207,14 @@ impl App {
         }
     }
 
-    /// Send network message.
+    /// Forwards a message to the background thread for network transmission.
     fn send_network_message(&self, msg: Message) {
         if let Some(ref tx) = self.peer_sender {
             let _ = tx.send(msg);
         }
     }
 
-    /// Handle menu input.
+    /// Handles directional and selection input for menu screens.
     fn handle_menu_input(&mut self, code: KeyCode) {
         match code {
             KeyCode::Up | KeyCode::Char('w') | KeyCode::Char('W') => self.menu_prev(),
@@ -230,7 +233,7 @@ impl App {
         }
     }
 
-    /// Handle menu selection.
+    /// Triggers actions based on the currently selected menu item.
     fn handle_menu_select(&mut self) {
         let selected = self.menu_state.selected().unwrap_or(0);
         match self.state {
@@ -258,7 +261,7 @@ impl App {
         }
     }
 
-    /// Handle text input.
+    /// Processes keyboard input for IP and port entry.
     fn handle_text_input(&mut self, code: KeyCode) {
         match code {
             KeyCode::Enter => match self.state {
@@ -281,7 +284,7 @@ impl App {
         }
     }
 
-    /// Initialize network.
+    /// Spawns background threads to handle peer-to-peer communication.
     fn start_connection(&mut self, host: bool) {
         let addr = if host {
             format!("0.0.0.0:{}", self.host_port)
@@ -299,16 +302,16 @@ impl App {
         let tx_thread = tx_to_app.clone();
 
         thread::spawn(move || {
-            // Connect.
+            // attempt to establish the tcp connection.
             match Peer::new(&addr, host) {
                 Ok(peer) => {
                     let peer_receive = peer.stream.try_clone().expect("Failed to clone stream");
                     let mut peer_send = peer.stream;
 
-                    // Send ready.
+                    // signal the main thread that the peer is connected.
                     let _ = tx_thread.send(Message::Ready);
 
-                    // Network receiver loop.
+                    // spawn a dedicated thread for continuous deserialization.
                     let rx_inner = tx_thread.clone();
                     thread::spawn(move || {
                         loop {
@@ -326,7 +329,7 @@ impl App {
                         }
                     });
 
-                    // Network sender loop.
+                    // remain in the sender loop to push outgoing messages.
                     while let Ok(msg) = rx_from_app.recv() {
                         if bincode::serialize_into(&peer_send, &msg).is_err() {
                             break;
@@ -340,13 +343,13 @@ impl App {
             }
         });
 
-        // Init game state.
+        // initialize the game state for the new session.
         self.game_state = Some(GameState::new(host));
     }
 
-    /// Handle game input.
+    /// Handles interaction during ship placement and active combat.
     fn handle_game_input(&mut self, code: KeyCode) {
-        // Chat input.
+        // divert input to the text buffer if the chat interface is active.
         if self.chat_active {
             match code {
                 KeyCode::Enter => {
@@ -372,7 +375,7 @@ impl App {
         }
 
         match code {
-            // Navigation.
+            // handle grid navigation with wasd or arrow keys.
             KeyCode::Up | KeyCode::Char('w') | KeyCode::Char('W') => {
                 if self.cursor_pos.1 > 0 {
                     self.cursor_pos.1 -= 1;
@@ -393,16 +396,16 @@ impl App {
                     self.cursor_pos.0 += 1;
                 }
             }
-            // Rotation.
+            // rotate ship placement orientation.
             KeyCode::Char('r') | KeyCode::Char('R') | KeyCode::Char('x') | KeyCode::Char('X') => {
                 self.placing_horizontal = !self.placing_horizontal;
             }
-            // Toggle chat.
+            // toggle the chat input overlay.
             KeyCode::Char('e') | KeyCode::Char('E') | KeyCode::Char('c') | KeyCode::Char('C') => {
                 self.chat_active = true;
                 self.input_buffer.clear();
             }
-            // Action.
+            // process primary actions like placing a ship or firing a shot.
             | KeyCode::Char('z') | KeyCode::Char('Z') | KeyCode::Enter => {
                 let mut attack_to_send = None;
                 if self.state == AppState::Game
@@ -425,6 +428,7 @@ impl App {
                         .is_ok()
                     {
                         self.placing_ship_idx += 1;
+                        // notify peer that placement is done once all ships are set.
                         if self.placing_ship_idx >= crate::game::SHIP_LENGTHS.len() {
                             self.state = AppState::Game;
                             self.send_network_message(Message::Ready);
@@ -441,7 +445,7 @@ impl App {
         }
     }
 
-    /// Handle game over input.
+    /// Handles menu navigation after a game has concluded.
     fn handle_game_over_input(&mut self, code: KeyCode) {
         match code {
             KeyCode::Up | KeyCode::Char('w') | KeyCode::Char('W') => self.menu_prev(),
@@ -455,7 +459,7 @@ impl App {
         }
     }
 
-    /// Handle disconnect input.
+    /// Clears the disconnection notification and returns to the menu.
     fn handle_disconnected_input(&mut self, code: KeyCode) {
         match code {
             KeyCode::Enter | KeyCode::Esc | KeyCode::Char(' ') => {
@@ -465,7 +469,7 @@ impl App {
         }
     }
 
-    /// Reset for rematch.
+    /// Prepares the local state for a new round with the same peer.
     fn reset_game_for_rematch(&mut self) {
         let is_host = !self.host_port.is_empty();
         self.game_state = Some(GameState::new(is_host));
@@ -476,7 +480,7 @@ impl App {
         self.send_network_message(Message::Ready);
     }
 
-    /// Switch to main menu.
+    /// Resets the application to its initial state and drops networking.
     fn switch_to_main_menu(&mut self) {
         self.send_network_message(Message::Disconnected);
         self.state = AppState::MainMenu;
@@ -490,14 +494,14 @@ impl App {
         self.game_over_winner = None;
     }
 
-    /// Switch to play menu.
+    /// Updates state and options for the hosting/joining sub-menu.
     fn switch_to_play_menu(&mut self) {
         self.state = AppState::PlayMenu;
         self.menu_options = vec!["Host Game", "Join Game", "Back"];
         self.menu_state.select(Some(0));
     }
 
-    /// Select next.
+    /// Selects the next item in the current menu with wrapping.
     fn menu_next(&mut self) {
         let i = match self.menu_state.selected() {
             Some(i) => {
@@ -512,7 +516,7 @@ impl App {
         self.menu_state.select(Some(i));
     }
 
-    /// Select previous.
+    /// Selects the previous item in the current menu with wrapping.
     fn menu_prev(&mut self) {
         let i = match self.menu_state.selected() {
             Some(i) => {

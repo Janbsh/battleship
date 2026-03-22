@@ -18,31 +18,31 @@ const BATTLESHIP_TITLE: &str = r#"  ____        _   _   _           _     _
 
 const SHIP_NAMES: [&str; 5] = ["Carrier", "Battleship", "Cruiser", "Submarine", "Destroyer"];
 
-/// Render UI.
+/// Primary entry point for drawing the application UI to the terminal frame.
 pub fn render(app: &mut App, f: &mut Frame) {
     let area = f.area();
 
     let target_width = 100;
     let target_height = 30;
 
-    // Center container.
+    // center the game container within the available terminal space.
     let horizontal_chunks = Layout::horizontal([
         Constraint::Fill(1),
         Constraint::Length(target_width),
         Constraint::Fill(1),
     ])
-    .split(area);
+        .split(area);
 
     let vertical_chunks = Layout::vertical([
         Constraint::Fill(1),
         Constraint::Length(target_height),
         Constraint::Fill(1),
     ])
-    .split(horizontal_chunks[1]);
+        .split(horizontal_chunks[1]);
 
     let container_area = vertical_chunks[1];
 
-    // Outer border.
+    // apply an outer border with the game title.
     let outer_block = Block::default()
         .borders(Borders::ALL)
         .title(" BATTLESHIP ")
@@ -52,7 +52,7 @@ pub fn render(app: &mut App, f: &mut Frame) {
     let main_area = outer_block.inner(container_area);
     f.render_widget(outer_block, container_area);
 
-    // Render current state.
+    // delegate rendering based on the current application state.
     match app.state {
         AppState::MainMenu | AppState::PlayMenu => render_menu(app, f, main_area),
         AppState::HostInput | AppState::JoinInput => render_input_screen(app, f, main_area),
@@ -68,7 +68,7 @@ pub fn render(app: &mut App, f: &mut Frame) {
     }
 }
 
-/// Render menu.
+/// Renders the main and sub-menus with selectable options.
 fn render_menu(app: &App, f: &mut Frame, area: Rect) {
     let chunks = Layout::vertical([
         Constraint::Fill(1),
@@ -77,18 +77,18 @@ fn render_menu(app: &App, f: &mut Frame, area: Rect) {
         Constraint::Length(4),
         Constraint::Fill(1),
     ])
-    .split(area);
+        .split(area);
 
-    // Title.
+    // center the ascii title art.
     let [_, title_area, _] = Layout::horizontal([
         Constraint::Fill(1),
         Constraint::Length(48),
         Constraint::Fill(1),
     ])
-    .areas(chunks[1]);
+        .areas(chunks[1]);
     f.render_widget(Paragraph::new(BATTLESHIP_TITLE).cyan(), title_area);
 
-    // Menu options.
+    // map menu options to lines and highlight the currently selected index.
     let lines: Vec<Line> = app
         .menu_options
         .iter()
@@ -112,7 +112,7 @@ fn render_menu(app: &App, f: &mut Frame, area: Rect) {
     f.render_widget(Paragraph::new(lines), chunks[3]);
 }
 
-/// Render message.
+/// Helper for rendering simple full-screen status messages.
 fn render_message_screen(f: &mut Frame, area: Rect, title: &str, subtitle: &str) {
     let chunks = Layout::vertical([
         Constraint::Fill(1),
@@ -120,7 +120,7 @@ fn render_message_screen(f: &mut Frame, area: Rect, title: &str, subtitle: &str)
         Constraint::Length(3),
         Constraint::Fill(1),
     ])
-    .split(area);
+        .split(area);
 
     f.render_widget(
         Paragraph::new(title)
@@ -137,7 +137,7 @@ fn render_message_screen(f: &mut Frame, area: Rect, title: &str, subtitle: &str)
     );
 }
 
-/// Render disconnect screen.
+/// Displays a failure message when the network peer disconnects abruptly.
 fn render_disconnected_screen(app: &App, f: &mut Frame, area: Rect) {
     let chunks = Layout::vertical([
         Constraint::Fill(1),
@@ -146,7 +146,7 @@ fn render_disconnected_screen(app: &App, f: &mut Frame, area: Rect) {
         Constraint::Length(3),
         Constraint::Fill(1),
     ])
-    .split(area);
+        .split(area);
 
     f.render_widget(
         Paragraph::new("THE OTHER CAPTAIN HAS LEFT THE BATTLE.")
@@ -170,7 +170,7 @@ fn render_disconnected_screen(app: &App, f: &mut Frame, area: Rect) {
     f.render_widget(Paragraph::new(lines), chunks[3]);
 }
 
-/// Render input screen.
+/// Renders the input prompt for IP addresses or port numbers.
 fn render_input_screen(app: &App, f: &mut Frame, area: Rect) {
     let chunks = Layout::vertical([
         Constraint::Fill(1),
@@ -178,7 +178,7 @@ fn render_input_screen(app: &App, f: &mut Frame, area: Rect) {
         Constraint::Length(3),
         Constraint::Fill(1),
     ])
-    .split(area);
+        .split(area);
 
     let (title, placeholder) = match app.state {
         AppState::HostInput => (
@@ -197,7 +197,7 @@ fn render_input_screen(app: &App, f: &mut Frame, area: Rect) {
         chunks[1],
     );
 
-    // Input with cursor.
+    // display the current buffer content with a simulated cursor.
     let input_para = Paragraph::new(format!("{}_", app.input_buffer))
         .block(Block::bordered().title(placeholder))
         .alignment(Alignment::Center)
@@ -208,26 +208,26 @@ fn render_input_screen(app: &App, f: &mut Frame, area: Rect) {
         Constraint::Length(40),
         Constraint::Fill(1),
     ])
-    .areas(chunks[2]);
+        .areas(chunks[2]);
 
     f.render_widget(input_para, input_area);
 }
 
-/// Render game.
+/// Orchestrates the main game interface including grids, logs, and chat.
 fn render_game(app: &App, f: &mut Frame, area: Rect) {
     let h_layout = Layout::horizontal([
         Constraint::Min(64),
         Constraint::Length(24),
     ])
-    .split(area);
+        .split(area);
 
     let left_v_layout = Layout::vertical([
         Constraint::Length(14),
         Constraint::Fill(1),
     ])
-    .split(h_layout[0]);
+        .split(h_layout[0]);
 
-    // Center boards.
+    // divide the left area into two board slots.
     let boards_layout = Layout::horizontal([
         Constraint::Fill(1),
         Constraint::Length(36),
@@ -235,13 +235,13 @@ fn render_game(app: &App, f: &mut Frame, area: Rect) {
         Constraint::Length(36),
         Constraint::Fill(1),
     ])
-    .split(left_v_layout[0]);
+        .split(left_v_layout[0]);
 
     let right_v_layout = Layout::vertical([
         Constraint::Fill(1),
         Constraint::Length(3),
     ])
-    .split(h_layout[1]);
+        .split(h_layout[1]);
 
     if let Some(ref state) = app.game_state {
         let mut my_cursor = None;
@@ -249,13 +249,13 @@ fn render_game(app: &App, f: &mut Frame, area: Rect) {
         let mut preview = None;
 
         if app.state == AppState::Placing {
-            // Placement preview.
+            // show the placement cursor and ship orientation preview.
             my_cursor = Some(app.cursor_pos);
             if app.placing_ship_idx < SHIP_LENGTHS.len() {
                 preview = Some((SHIP_LENGTHS[app.placing_ship_idx], app.placing_horizontal));
             }
         } else {
-            // Aiming cursor.
+            // show the aiming cursor on the enemy board.
             opp_cursor = Some(app.cursor_pos);
         }
 
@@ -276,7 +276,7 @@ fn render_game(app: &App, f: &mut Frame, area: Rect) {
             None,
         );
 
-        // Status indicator.
+        // determine color and message based on the current player's turn.
         let info_color = if app.state == AppState::Placing {
             Color::Yellow
         } else if state.my_turn {
@@ -318,7 +318,7 @@ fn render_game(app: &App, f: &mut Frame, area: Rect) {
         );
     }
 
-    // Chat history.
+    // display the most recent 15 lines of radio traffic.
     let chat_messages: Vec<Line> = app
         .chat_history
         .iter()
@@ -333,7 +333,7 @@ fn render_game(app: &App, f: &mut Frame, area: Rect) {
         right_v_layout[0],
     );
 
-    // Chat input.
+    // style the chat input box based on whether it is active.
     let input_title = if app.chat_active {
         " Sending Message... "
     } else {
@@ -360,7 +360,7 @@ fn render_game(app: &App, f: &mut Frame, area: Rect) {
     );
 }
 
-/// Render game over screen.
+/// Renders the final victory or defeat screen.
 fn render_game_over(app: &App, f: &mut Frame, area: Rect) {
     let chunks = Layout::vertical([
         Constraint::Fill(1),
@@ -369,7 +369,7 @@ fn render_game_over(app: &App, f: &mut Frame, area: Rect) {
         Constraint::Length(3),
         Constraint::Fill(1),
     ])
-    .split(area);
+        .split(area);
 
     let (result_text, result_color) = if app.game_over_winner == Some(true) {
         (
@@ -388,7 +388,6 @@ fn render_game_over(app: &App, f: &mut Frame, area: Rect) {
         chunks[1],
     );
 
-    // Options.
     let lines: Vec<Line> = app
         .menu_options
         .iter()
@@ -412,7 +411,7 @@ fn render_game_over(app: &App, f: &mut Frame, area: Rect) {
     f.render_widget(Paragraph::new(lines), chunks[3]);
 }
 
-/// Draw board grid.
+/// Renders a single 10x10 battleship grid with coordinate labels and cursor.
 fn draw_grid(
     f: &mut Frame,
     area: Rect,
@@ -425,7 +424,7 @@ fn draw_grid(
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    // X-axis labels.
+    // render the horizontal coordinate labels (A-J).
     let mut rows = Vec::new();
     rows.push(
         Line::from("    A  B  C  D  E  F  G  H  I  J")
@@ -434,7 +433,7 @@ fn draw_grid(
     );
 
     for y in 0..BOARD_SIZE {
-        // Y-axis labels.
+        // render the vertical coordinate labels (1-10).
         let mut spans = vec![Span::styled(
             format!("{:2} ", y + 1),
             Style::default().dark_gray(),
@@ -444,7 +443,7 @@ fn draw_grid(
             let is_cursor = cursor == Some((x, y));
             let mut is_preview = false;
 
-            // Preview check.
+            // determine if this specific cell is part of a placement preview.
             if let (Some((cx, cy)), Some((len, horizontal))) = (cursor, preview) {
                 if horizontal {
                     if y == cy && x >= cx && x < cx + len {
@@ -457,7 +456,7 @@ fn draw_grid(
                 }
             }
 
-            // Cell styling.
+            // assign symbols and colors based on the cell's underlying game state.
             let (char, mut style) = match board.cells[y][x] {
                 Cell::Ship => (" S ", Style::default().fg(Color::White).bold()),
                 Cell::Miss => (" O ", Style::default().fg(Color::Blue)),
@@ -465,6 +464,7 @@ fn draw_grid(
                 _ => (" . ", Style::default().fg(Color::DarkGray)),
             };
 
+            // apply highlighting for the cursor or placement preview.
             if is_preview {
                 style = style.fg(Color::Cyan);
                 if is_cursor {
