@@ -36,4 +36,21 @@ impl Peer {
         stream.set_nodelay(true)?;
         Ok(Self { stream })
     }
+
+    /// Serializes and sends a message over the network.
+    pub fn send_message(&mut self, message: Message) -> std::io::Result<()> {
+        bincode::serialize_into(&self.stream, &message)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+
+        // Ensure all data is pushed through the stream.
+        self.stream.flush()?;
+        Ok(())
+    }
+
+    /// Receives and deserializes a message from the network.
+    /// This will block until a message is received.
+    pub fn receive_message(&mut self) -> std::io::Result<Message> {
+        bincode::deserialize_from(&self.stream)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+    }
 }
