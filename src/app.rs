@@ -1,0 +1,529 @@
+use crate::game::GameState;
+use crate::network::{Message, Peer};
+use crate::state::AppState;
+use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use ratatui::widgets::ListState;
+use ratatui::{Terminal, backend::CrosstermBackend};
+use std::io::{self, Write};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::thread;
+use std::time::Duration;
+
+/// Application state and logic.
+pub struct App {
+    // Current screen state.
+    pub state: AppState,
+
+    // Exit flag.
+    pub exit: bool,
+
+    // Menu options.
+    pub menu_options: Vec<&'static str>,
+
+    // Menu selection state.
+    pub menu_state: ListState,
+
+    // Input buffer.
+    pub input_buffer: String,
+
+    // Hosting port.
+    pub host_port: String,
+
+    // Join address.
+    pub join_addr: String,
+
+    // Game logic state.
+    pub game_state: Option<GameState>,
+
+    // Network sender.
+    pub peer_sender: Option<Sender<Message>>,
+
+    // Network receiver.
+    pub msg_receiver: Option<Receiver<Message>>,
+
+    // Cursor position.
+    pub cursor_pos: (usize, usize),
+
+    // Chat status.
+    pub chat_active: bool,
+
+    // Chat history.
+    pub chat_history: Vec<String>,
+
+    // Current ship index.
+    pub placing_ship_idx: usize,
+
+    // Ship orientation.
+    pub placing_horizontal: bool,
+
+    // Winner status.
+    pub game_over_winner: Option<bool>,
+}
+
+impl Default for App {
+    /// Default app state.
+    fn default() -> Self {
+        let mut menu_state = ListState::default();
+        menu_state.select(Some(0));
+        Self {
+            state: AppState::MainMenu,
+            exit: false,
+            menu_options: vec!["Play", "Exit"],
+            menu_state,
+            input_buffer: String::new(),
+            host_port: String::new(),
+            join_addr: String::new(),
+            game_state: None,
+            peer_sender: None,
+            msg_receiver: None,
+            cursor_pos: (0, 0),
+            chat_active: false,
+            chat_history: Vec::new(),
+            placing_ship_idx: 0,
+            placing_horizontal: true,
+            game_over_winner: None,
+        }
+    }
+}
+
+impl App {
+    /// Main game loop.
+    pub fn run(&mut self, terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<()> {
+        while !self.exit {
+            // Update state.
+            self.update();
+
+            // Render UI.
+            terminal.draw(|f| crate::ui::render(self, f))?;
+
+            // Poll for input.
+            if event::poll(Duration::from_millis(50))? {
+                // Drain events.
+                while event::poll(Duration::from_millis(0))? {
+                    let ev = event::read()?;
+                    match ev {
+                        Event::Key(key) => {
+                            if key.kind == KeyEventKind::Press {
+                                // Handle input by state.
+                                match self.state {
+                                    AppState::MainMenu | AppState::PlayMenu => self.handle_menu_input(key.code),
+                                    AppState::HostInput | AppState::JoinInput => self.handle_text_input(key.code),
+                                    AppState::Game | AppState::Placing => self.handle_game_input(key.code),
+                                    AppState::GameOver => self.handle_game_over_input(key.code),
+                                    AppState::OpponentDisconnected => self.handle_disconnected_input(key.code),
+                                    AppState::Connecting => {
+                                        if key.code == KeyCode::Esc {
+                                            self.switch_to_main_menu();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Event::Mouse(_) | Event::FocusGained | Event::FocusLost | Event::Resize(_, _) | Event::Paste(_) => {}
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Update from network.
+    fn update(&mut self) {
+        let mut messages = Vec::new();
+        if let Some(ref rx) = self.msg_receiver {
+            while let Ok(msg) = rx.try_recv() {
+                messages.push(msg);
+            }
+        }
+        for msg in messages {
+            self.handle_network_message(msg);
+        }
+    }
+
+    /// Handle network messages.
+    fn handle_network_message(&mut self, msg: Message) {
+        match msg {
+            Message::Ready => {
+                if self.state == AppState::Connecting {
+                    self.state = AppState::Placing;
+                }
+            }
+            Message::Attack { x, y } => {
+                if let Some(ref mut state) = self.game_state {
+                    if let Ok(result_cell) = state.handle_opponent_move(x, y) {
+                        let is_hit = result_cell == crate::game::Cell::Hit;
+                        let is_all_sunk = state.my_board.is_all_sunk();
+
+                        self.send_network_message(Message::Result {
+                            x,
+                            y,
+                            hit: is_hit,
+                            sunk: is_all_sunk,
+                        });
+
+                        // Check for loss.
+                        if is_all_sunk {
+                            self.state = AppState::GameOver;
+                            self.game_over_winner = Some(false);
+                            self.menu_options = vec!["Rematch", "Main Menu"];
+                            self.menu_state.select(Some(0));
+                        }
+                    }
+                }
+            }
+            Message::Result { x, y, hit, sunk } => {
+                // Handle attack result.
+                if let Some(ref mut state) = self.game_state {
+                    state.opponent_board.cells[y][x] = if hit {
+                        crate::game::Cell::Hit
+                    } else {
+                        crate::game::Cell::Miss
+                    };
+
+                    // Check for win.
+                    if sunk {
+                        self.state = AppState::GameOver;
+                        self.game_over_winner = Some(true);
+                        self.menu_options = vec!["Rematch", "Main Menu"];
+                        self.menu_state.select(Some(0));
+                    }
+                }
+            }
+            Message::ChatMessage(text) => {
+                // Add to chat history.
+                self.chat_history.push(format!("Opponent: {}", text));
+            }
+            Message::Disconnected => {
+                // Handle disconnect.
+                if self.state != AppState::MainMenu {
+                    self.state = AppState::OpponentDisconnected;
+                    self.menu_options = vec!["OK"];
+                    self.menu_state.select(Some(0));
+                }
+            }
+        }
+    }
+
+    /// Send network message.
+    fn send_network_message(&self, msg: Message) {
+        if let Some(ref tx) = self.peer_sender {
+            let _ = tx.send(msg);
+        }
+    }
+
+    /// Handle menu input.
+    fn handle_menu_input(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Up | KeyCode::Char('w') | KeyCode::Char('W') => self.menu_prev(),
+            KeyCode::Down | KeyCode::Char('s') | KeyCode::Char('S') => self.menu_next(),
+            KeyCode::Enter => self.handle_menu_select(),
+            KeyCode::Esc => {
+                if matches!(self.state, AppState::PlayMenu) {
+                    self.switch_to_main_menu();
+                }
+            }
+            KeyCode::Char('q') => {
+                self.send_network_message(Message::Disconnected);
+                self.exit = true;
+            }
+            _ => {}
+        }
+    }
+
+    /// Handle menu selection.
+    fn handle_menu_select(&mut self) {
+        let selected = self.menu_state.selected().unwrap_or(0);
+        match self.state {
+            AppState::MainMenu => match selected {
+                0 => self.switch_to_play_menu(),
+                1 => {
+                    self.send_network_message(Message::Disconnected);
+                    self.exit = true;
+                }
+                _ => {}
+            },
+            AppState::PlayMenu => match selected {
+                0 => {
+                    self.state = AppState::HostInput;
+                    self.input_buffer.clear();
+                }
+                1 => {
+                    self.state = AppState::JoinInput;
+                    self.input_buffer.clear();
+                }
+                2 => self.switch_to_main_menu(),
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+
+    /// Handle text input.
+    fn handle_text_input(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Enter => match self.state {
+                AppState::HostInput => {
+                    self.host_port = self.input_buffer.clone();
+                    self.start_connection(true);
+                }
+                AppState::JoinInput => {
+                    self.join_addr = self.input_buffer.clone();
+                    self.start_connection(false);
+                }
+                _ => {}
+            },
+            KeyCode::Char(c) => self.input_buffer.push(c),
+            KeyCode::Backspace => {
+                self.input_buffer.pop();
+            }
+            KeyCode::Esc => self.switch_to_play_menu(),
+            _ => {}
+        }
+    }
+
+    /// Initialize network.
+    fn start_connection(&mut self, host: bool) {
+        let addr = if host {
+            format!("0.0.0.0:{}", self.host_port)
+        } else {
+            self.join_addr.clone()
+        };
+
+        self.state = AppState::Connecting;
+        let (tx_to_app, rx_from_peer) = mpsc::channel();
+        let (tx_to_peer, rx_from_app) = mpsc::channel();
+
+        self.msg_receiver = Some(rx_from_peer);
+        self.peer_sender = Some(tx_to_peer);
+
+        let tx_thread = tx_to_app.clone();
+
+        thread::spawn(move || {
+            // Connect.
+            match Peer::new(&addr, host) {
+                Ok(peer) => {
+                    let peer_receive = peer.stream.try_clone().expect("Failed to clone stream");
+                    let mut peer_send = peer.stream;
+
+                    // Send ready.
+                    let _ = tx_thread.send(Message::Ready);
+
+                    // Network receiver loop.
+                    let rx_inner = tx_thread.clone();
+                    thread::spawn(move || {
+                        loop {
+                            match bincode::deserialize_from::<_, Message>(&peer_receive) {
+                                Ok(msg) => {
+                                    if rx_inner.send(msg).is_err() {
+                                        break;
+                                    }
+                                }
+                                Err(_) => {
+                                    let _ = rx_inner.send(Message::Disconnected);
+                                    break;
+                                }
+                            }
+                        }
+                    });
+
+                    // Network sender loop.
+                    while let Ok(msg) = rx_from_app.recv() {
+                        if bincode::serialize_into(&peer_send, &msg).is_err() {
+                            break;
+                        }
+                        let _ = peer_send.flush();
+                    }
+                }
+                Err(_) => {
+                    let _ = tx_thread.send(Message::Disconnected);
+                }
+            }
+        });
+
+        // Init game state.
+        self.game_state = Some(GameState::new(host));
+    }
+
+    /// Handle game input.
+    fn handle_game_input(&mut self, code: KeyCode) {
+        // Chat input.
+        if self.chat_active {
+            match code {
+                KeyCode::Enter => {
+                    if !self.input_buffer.is_empty() {
+                        let msg = self.input_buffer.clone();
+                        self.send_network_message(Message::ChatMessage(msg.clone()));
+                        self.chat_history.push(format!("You: {}", msg));
+                        self.input_buffer.clear();
+                    }
+                    self.chat_active = false;
+                }
+                KeyCode::Esc => {
+                    self.chat_active = false;
+                    self.input_buffer.clear();
+                }
+                KeyCode::Char(c) => self.input_buffer.push(c),
+                KeyCode::Backspace => {
+                    self.input_buffer.pop();
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        match code {
+            // Navigation.
+            KeyCode::Up | KeyCode::Char('w') | KeyCode::Char('W') => {
+                if self.cursor_pos.1 > 0 {
+                    self.cursor_pos.1 -= 1;
+                }
+            }
+            KeyCode::Down | KeyCode::Char('s') | KeyCode::Char('S') => {
+                if self.cursor_pos.1 < 9 {
+                    self.cursor_pos.1 += 1;
+                }
+            }
+            KeyCode::Left | KeyCode::Char('a') | KeyCode::Char('A') => {
+                if self.cursor_pos.0 > 0 {
+                    self.cursor_pos.0 -= 1;
+                }
+            }
+            KeyCode::Right | KeyCode::Char('d') | KeyCode::Char('D') => {
+                if self.cursor_pos.0 < 9 {
+                    self.cursor_pos.0 += 1;
+                }
+            }
+            // Rotation.
+            KeyCode::Char('r') | KeyCode::Char('R') | KeyCode::Char('x') | KeyCode::Char('X') => {
+                self.placing_horizontal = !self.placing_horizontal;
+            }
+            // Toggle chat.
+            KeyCode::Char('e') | KeyCode::Char('E') | KeyCode::Char('c') | KeyCode::Char('C') => {
+                self.chat_active = true;
+                self.input_buffer.clear();
+            }
+            // Action.
+            | KeyCode::Char('z') | KeyCode::Char('Z') | KeyCode::Enter => {
+                let mut attack_to_send = None;
+                if self.state == AppState::Game
+                    && let Some(ref mut state) = self.game_state
+                    && state.my_turn
+                {
+                    let (x, y) = self.cursor_pos;
+                    if state.handle_my_move(x, y).is_ok() {
+                        state.my_turn = false;
+                        attack_to_send = Some((x, y));
+                    }
+                } else if self.state == AppState::Placing
+                    && let Some(ref mut state) = self.game_state
+                {
+                    let (x, y) = self.cursor_pos;
+                    let length = crate::game::SHIP_LENGTHS[self.placing_ship_idx];
+                    if state
+                        .my_board
+                        .place_ship(x, y, length, self.placing_horizontal)
+                        .is_ok()
+                    {
+                        self.placing_ship_idx += 1;
+                        if self.placing_ship_idx >= crate::game::SHIP_LENGTHS.len() {
+                            self.state = AppState::Game;
+                            self.send_network_message(Message::Ready);
+                        }
+                    }
+                }
+
+                if let Some((x, y)) = attack_to_send {
+                    self.send_network_message(Message::Attack { x, y });
+                }
+            }
+            KeyCode::Esc => self.switch_to_main_menu(),
+            _ => {}
+        }
+    }
+
+    /// Handle game over input.
+    fn handle_game_over_input(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Up | KeyCode::Char('w') | KeyCode::Char('W') => self.menu_prev(),
+            KeyCode::Down | KeyCode::Char('s') | KeyCode::Char('S') => self.menu_next(),
+            KeyCode::Enter => match self.menu_state.selected() {
+                Some(0) => self.reset_game_for_rematch(),
+                Some(1) => self.switch_to_main_menu(),
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+
+    /// Handle disconnect input.
+    fn handle_disconnected_input(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Enter | KeyCode::Esc | KeyCode::Char(' ') => {
+                self.switch_to_main_menu();
+            }
+            _ => {}
+        }
+    }
+
+    /// Reset for rematch.
+    fn reset_game_for_rematch(&mut self) {
+        let is_host = !self.host_port.is_empty();
+        self.game_state = Some(GameState::new(is_host));
+        self.placing_ship_idx = 0;
+        self.cursor_pos = (0, 0);
+        self.state = AppState::Placing;
+        self.game_over_winner = None;
+        self.send_network_message(Message::Ready);
+    }
+
+    /// Switch to main menu.
+    fn switch_to_main_menu(&mut self) {
+        self.send_network_message(Message::Disconnected);
+        self.state = AppState::MainMenu;
+        self.menu_options = vec!["Play", "Exit"];
+        self.menu_state.select(Some(0));
+        self.game_state = None;
+        self.peer_sender = None;
+        self.msg_receiver = None;
+        self.chat_history.clear();
+        self.chat_active = false;
+        self.game_over_winner = None;
+    }
+
+    /// Switch to play menu.
+    fn switch_to_play_menu(&mut self) {
+        self.state = AppState::PlayMenu;
+        self.menu_options = vec!["Host Game", "Join Game", "Back"];
+        self.menu_state.select(Some(0));
+    }
+
+    /// Select next.
+    fn menu_next(&mut self) {
+        let i = match self.menu_state.selected() {
+            Some(i) => {
+                if i >= self.menu_options.len() - 1 {
+                    0
+                } else {
+                    i + 1
+                }
+            }
+            None => 0,
+        };
+        self.menu_state.select(Some(i));
+    }
+
+    /// Select previous.
+    fn menu_prev(&mut self) {
+        let i = match self.menu_state.selected() {
+            Some(i) => {
+                if i == 0 {
+                    self.menu_options.len() - 1
+                } else {
+                    i - 1
+                }
+            }
+            None => 0,
+        };
+        self.menu_state.select(Some(i));
+    }
+}
